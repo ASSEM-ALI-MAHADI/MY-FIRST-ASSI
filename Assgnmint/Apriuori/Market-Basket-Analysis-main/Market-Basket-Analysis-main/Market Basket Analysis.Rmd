@@ -1,0 +1,506 @@
+---
+title: "Market Basket Analysis"
+author: "David Apamo"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Association Analysis using the Apriori Algorithm
+
+Association analysis is used to uncover relationships between items that frequently occur together in a given data set. It helps identify patterns, dependencies and associations among different variables in large datasets.
+
+Before mining association rules, the data is first converted into a set of transactions, each transaction having a unique transaction ID. Each transaction represents an observation and has a set of items(represented by variables). A rule is defined as an implication of the form X ⇒ Y, where X and Y are subsets of the itemsets. X represents the condition while Y represent the outcome of the association rule. Various quality measures can then be defined on the itemsets and association rules.
+
+Association rules are commonly used in market basket analysis to uncover the items that are usually purchased together. For this analysis, I will use the bakery data set I obtained from Kaggle.
+
+```{r}
+# Load packages
+suppressMessages(
+  {
+    library(plyr)
+    library(tidyverse)
+    library(janitor)
+    library(arules)
+    library(arulesViz)
+    library(RColorBrewer)
+  }
+)
+```
+
+
+The arules package uses S4 object system to implement classes and methods. It provides a structured way of organizing and manipulating data by defining formal classes and creating objects of those classes. Methods can then be defined to perform specific operations on the created objects.
+
+```{r}
+# Import data
+Bakery <- read_csv("Bakery.csv")
+```
+
+```{r}
+# View structure of the dataset
+glimpse(Bakery)
+```
+
+The data contains 20,507 observations of 5 variables. Transaction number is of numeric type (double), items, day_part and day_type are of character types while date_time is of type date time, just as the name indicates.
+
+```{r}
+# View the first few observations
+Bakery |> head()
+```
+
+Transactions with the same transaction number were made on the same date and time. Here, transactions basically represent the order of payments made for the items bought.
+
+## Data cleaning and pre-processing
+
+```{r}
+# Clean variable names
+Bakery <- clean_names(Bakery)
+```
+
+```{r}
+# Check for missing values
+map_dbl(Bakery, ~sum(which(is.na(.))))
+```
+
+The data has no missing values.
+
+```{r}
+# Check for duplicated observations
+sum(duplicated(Bakery))
+```
+
+There are 1620 duplicated observations. This is a case where two or more items were bought together at the same time of the day. Therefore, I won't drop the duplicates. I will rather group the data so that items with the same transaction number and date are grouped together.
+
+```{r}
+# Factor the variables day_part and day_type
+cols_to_factor <- c("daypart", "day_type")
+Bakery <- mutate_at(Bakery, .vars = cols_to_factor, .funs = factor)
+```
+
+```{r}
+# Generate summary statistics for each and every variable
+summary(Bakery)
+```
+
+* There are 4 unique parts of the day (morning, afternoon, evening, night) and two unique types of days (weekday and weekend). 
+* Most transactions were made in the afternoon, followed by morning,evening and night respectively. 
+* The first transaction was made on 11th January, 2016 and the last transaction was made on 3rd December, 2017. They may however have different transaction numbers.
+
+```{r}
+# Check for unique items sold by the bakery
+length(unique(Bakery$items))
+```
+
+The bakery sells 94 unique items e.g bread, scandinavian, jam, hot chocolate, cookies, just to name a few.
+
+```{r}
+# Group together observations with same transaction number and date_time
+grouped_items_data <- ddply(Bakery, c("transaction_no", "date_time"), 
+                            function(df) paste(df$items, collapse = ","))
+```
+
+```{r}
+# View the first five observations of the grouped data
+head(grouped_items_data, n = 5)
+```
+
+Items that were purchased together at the same time are now grouped together under the same transaction number.
+
+I will mine association rules using two different datasets. The first dataset will have only one variable (items)  while the second dataset will have three variables (items, day_part and day_type). Including the variables day_part and day_type will help me gain more insights into purchasing patterns of the customers. I'll be able to understand if certain items are more popular during particular times or days. This can be valuable for targeted marketing or inventory management strategies.
+
+# Data Preprocessing
+
+## Prepare the First Dataset
+
+```{r}
+# Set date_time to NULL as it won't be useful in rule mining.
+grouped_items_data$date_time <- NULL
+```
+
+The grouped data now contains only unique transactions and items bought in each transaction. I will store it in my Local disk as a csv file.
+
+```{r}
+# Save the grouped items as a csv file
+write.csv(grouped_items_data$V1, "ItemList.csv", quote = FALSE, row.names = TRUE)
+```
+
+The saved Item List data is in basket format.
+
+## Prepare the Second Dataset
+
+```{r}
+# Merge the original data with the grouped items data
+joined_data <- left_join(grouped_items_data, Bakery, by = "transaction_no")
+```
+
+```{r}
+# Select only the observations with unique transaction numbers
+UniqueTransactions <- distinct(joined_data, transaction_no, .keep_all = TRUE)
+# Select items, day_part and day_type variables
+Data <- UniqueTransactions |> select(items = V1, daypart, day_type)
+```
+
+# Create Transactions
+
+## Begin with the First Dataset that contains only the items variable
+
+Transactions in the context of association analysis, are a set of items that are associated or observed together. They represent instances in a dataset that consist of various items(columns). Each transaction has a unique transaction ID and contains a subset of the items.
+
+```{r}
+# Load the basket data "ItemList" into an object of transaction class
+# (The data is already in basket format and will be converted into transactions)
+tr <- read.transactions(file = "ItemList.csv", rm.duplicates = TRUE, 
+                         format = "basket", sep = ",", cols = 1)
+```
+
+Ignore the warnings as they don't mean errors.
+
+```{r}
+# View the transactions
+tr
+```
+
+There are a total of 9,466 transactions and 105 items.
+
+## Inspect transactions
+
+```{r}
+# Have a summary of the transactions
+summary(tr)
+```
+
+There are a total of 9,466 transactions and 105 items, with a density of 0.01899. Density refers to the degree of sparsity or compactness of the transactions. It measures how frequently items appear together in different transactions. The density here is low, implying that the items are spread out across the transactions.
+
+The top most frequently sold items are coffee, bread, tea, cake and Pastry. Most transactions have 1, 2 or 3 items. The longest transaction has 10 items.
+
+```{r}
+# Look at the frequency of 20 most frequent items
+itemFrequencyPlot(tr,topN = 20, type = "absolute", col = brewer.pal(8,'Pastel2'), 
+                  main = "Absolute Item Frequency Plot")
+```
+
+Coffee is the most sold item followed by bread, tea, cake, pastry, sandwich and so on..
+
+## Mine Frequent Itemsets
+
+```{r}
+# Find the possible number of itemsets
+2^ncol(tr)
+```
+
+This is a very big number of possible itemsets for this dataset.
+
+```{r}
+# Find frequent itemsets
+item_sets <- apriori(tr, parameter=list(target = "frequent"))
+```
+
+```{r}
+# View the frequent item sets
+item_sets
+```
+
+There are only four frequent itemsets. It is important to note that the apriori algorithm uses a default support value of 0.1(10%). I'll need to lower my support value in order to discover more frequent itemsets.
+
+```{r}
+# Find the support value for itemsets that affect/appear in 10 transactions
+10/nrow(tr)
+```
+
+To find itemsets that appear in 10 transactions, I'll need to go down to a support of about 0.1%.
+
+```{r}
+# Find itemsets that affect/appear in 10 transactions
+item_sets <- apriori(tr, parameter=list(target = "frequent", support = 0.001))
+```
+
+```{r}
+# View the itemsets
+item_sets
+```
+
+Lowering the support value has indeed helped! The algorithm mined 469 frequent itemsets.
+
+```{r}
+# Sort the itemsets by support
+item_sets <- sort(item_sets, by = "support")
+# Inspect the top 10 frequent itemsets
+item_sets |> head(n = 10) |> inspect()
+```
+
+* Coffee, bread, tea and cake are mostly purchased separately.
+* Other customers also prefer buying bread and coffee together, or buying cake and coffee together.
+* Pastry, sandwich, medialuna and hot chocolate are also purchased separately most of the times.
+
+
+# Mine Association Rules
+
+Before mining association rules, I want to define some key parameters and interest measures;
+
+* Support - is a measure of the frequency of occurrence of an itemset in the dataset. It is expressed as a fraction or as a percentage, with higher support values signifying the itemsets with high frequency of occurrence in the data set.
+* Confidence - confidence measures the likelihood that the presence of an antecedent(condition of the rule) in a transaction implies the presence of the consequent(outcome of the rule). Antecedent is found on the left-hand side while the consequent is found on the right-hand side. Higher confidence values indicate a stronger association between items.
+* Lift - lift measures the degree of association between antecedent and consequent of a rule, while considering the support of the consequent. It compares the observed support of the rule to the expected support support under independence.
+  * Lift > 1 indicates that the antecedent and consequent are positively associated (occur together more frequently than expected by chance).
+  * Lift = 1 indicates independence between the antecedent and consequent.
+  * Lift < 1 indicates that the antecedent and the consequent are negatively associated (occur together less frequently than expected by chance).
+* Phi and gini interest measures help to understand the significance and strength of association between items in association rules.
+  * Phi assesses the correlation between binary variables in association rules and considers both the presence and absence of items in transactions. A high positive phi coefficient closer to 1 indicates a strong positive association between items while a value closer to -1 indicates a strong negative association. A zero phi value indicate no association between items.
+  * Gini assesses the imbalance of distribution between transactions containing antecedent and transactions containing the consequent. A zero value of gini indicates independence between antecedent and consequent. This implies that the presence of an item has no influence on the presence of another item. Gini values close to 1 indicate strong association/dependence between antecedent and consequent. This implies that the presence of an item significantly influences the presence of the other item.
+
+```{r}
+# Mine association rules using apriori algorithm
+rules <- apriori(tr, parameter = list(support = 0.001, confidence = 0.8, maxlen = 10))
+rules
+```
+
+Only 7 rules were mined.
+
+```{r}
+# Inspect the mined rules
+rules |> inspect()
+```
+
+Even though the support values for these seven association rules are low, the confidence and lift values are good. The lift values are all greater than 1, implying that the antecedent and consequent of each rule occur together more frequently than expected by chance. The confident values indicate that there's more than 80% likelihood that the presence of an antecedent in a transaction implies the presence of the consequent.
+
+From the above rules;
+
+* I'm 87% certain that coffee is more likely to be purchased together with extra salami or feta and salad.
+* I'm 86% certain that coffee is more likely to be purchased together with pastry and toast.
+* I'm also 85% certain that coffee is more likely to be purchased together with Hearty & Seasonal and Sandwich.
+* Again, I'm 83% certain that coffee is more likely to be purchased together with cake and vegan mince pie.
+* I'm also 83% certain that coffee is more likely to be purchased together with salad and sandwich.
+* Those who like to "keep it local" were also more likely to buy coffee.
+
+To mine more association rules, I can consider lowering the support value a little bit further. Lowering the confidence isn't a good idea.
+
+```{r}
+# Calculate additional interest measures(phi & gini) and add them to the rules as columns
+quality(rules) <- cbind(quality(rules),
+  interestMeasure(rules, measure = c("phi", "gini"),
+    trans = tr))
+```
+
+```{r}
+# Write/save the association rules as a CSV file
+write(rules, file = "rules.csv", quote = TRUE)
+```
+
+
+# Association Rule Visualization
+
+```{r}
+# Default scatter plot of the rules
+plot(rules, control = list(jitter = 0))
+```
+
+The plot shows that rules with high lift values have low support.
+
+```{r}
+# Color the plot by the number of items in the rule
+plot(rules, method = "two-key plot")
+```
+
+Two rules had two items each, while the rest of the rules had three items each.
+
+```{r}
+# Group plot
+plot(rules, method = "grouped")
+```
+
+The sizes of the points increase as support value increases while contrast increases as lift values increase.
+
+```{r}
+# Plot the association rules as a graph
+plot(rules, method = "graph")
+```
+
+The arrow points the lift then the consequent(outcome of the rule).
+
+* Pastry and toast are more likely to be purchased together with coffee, same as cake and vegan mince pie.
+* Hearty & seasonal and sandwich are also more likely to be purchased together with coffee, same as salad and extra salami or feta.
+* Customers who like to keep it local are also more likely to buy coffee.
+
+```{r}
+# Individual rule representation
+plot(rules, method = "paracoord")
+```
+
+The plot provides the following key insights;
+
+* If a customer purchases toast or pastry, he/she is more likely to purchase coffee.
+* Also, if a customer purchases sandwich or salad, he/she is more likely to purchase coffee.
+* If a customer purchases Vegan mince pie, extra salami/feta or cake, he/she is also more likely to purchase coffee.
+* Those who liked to "keep it local" are also likely to purchase coffee.
+
+
+# Create Transactions and mine Association Rules using the Second Dataset
+
+Including day_time and day_type will give me a deeper understanding of the purchasing patterns. For example, I'll be able to find if certain items are more popular during particular days or times of the day.
+
+```{r}
+# Create transactions
+trans <- transactions(Data)
+# View the transactions
+trans
+```
+
+The warning says that the first column is not a logical or factor variable and the transactions function applied default discretization method on the column.
+
+```{r}
+# Inspect the transactions
+summary(trans)
+```
+
+There are a total of 9,465 transactions and 2,899 items, with a density of 0.001. The density here is low, implying that the items are spread out across the transactions. Each transaction has 3 items.
+
+```{r}
+# Find frequent itemsets using the default support value
+Freq_itemsets <- apriori(trans, parameter=list(target = "frequent"))
+```
+
+```{r}
+# View the frequent itemsets
+Freq_itemsets
+```
+
+Using the default support value of 0.1, the algorithm only mined 10 frequent itemsets.
+
+```{r}
+# Find the support value for itemsets that affect/appear in 10 transactions
+10/nrow(trans)
+```
+
+To find itemsets that affect/appear in 10 transactions, I'll need to go down to a support of about 0.1%.
+
+```{r}
+# Find itemsets that affect/appear in 10 transactions
+Freq_itemsets <- apriori(trans, parameter=list(target = "frequent", support = 0.001))
+```
+
+470 frequent itemsets are mined. This is slightly more than the number of itemsets that was mined using the first dataset (ItemLists data).
+
+```{r}
+# Sort the itemsets by support
+Freq_itemsets <- sort(Freq_itemsets, by = "support")
+# Inspect the top 20 frequent itemsets
+Freq_itemsets |> head(n = 20) |> inspect()
+
+```
+
+The most frequent itemsets (items that occur together frequently) include;
+
+* weekday, afternoon, morning, afternoon weekday, weekend, morning weekday, afternoon weekend, morning weekend, bread, coffee, coffee weekday, bread weekday e.t.c.
+
+
+# Mine Association Rules
+
+```{r}
+# Mine association rules
+Rules <- apriori(trans, parameter = list(support = 0.001, confidence = 0.8, maxlen = 10))
+Rules
+```
+
+A total of 91 rules have been mined. Incorporating day_time and day_type in the data has resulted into more association rules.
+
+```{r}
+# Inspect top 20 rules
+Rules |> head(n = 20) |> inspect()
+```
+
+Key insights from the first 20 association rules;
+
+* There's 100% likelihood that T-shirts are purchased in the evening.
+* There's also 100% likelihood that T-shirts are purchased on weekends.
+  * From the first two association rules, I can say that T-shirts are more likely to be purchased on weekends during the evening.
+* There's also 100% likelihood that tea and pastry are purchased on weekdays.
+* There's also 100% likelihood that sandwich and coke are purchased in the afternoon.
+* There's 90.9% likelihood that coffee and soup are purchased on weekdays.
+* There's 83.3% likelihood that coffee and sandwich are purchased in the afternoon.
+* There's 91.6% likelihood that coffee and sandwich are purchased on weekdays.
+  * I can therefore say that coffee and sandwich are more likely to be purchased on weekdays afternoon.
+* There's 83.3% likelihood that bread and baguette are purchased in the morning.
+* There's 91.6% likelihood that focaccia are purchased on weekends.
+* There's also 91.6% likelihood that coffee and toast are purchased in the morning.
+* There's also 84.6% likelihood that scone and coffee are purchased in the afternoon.
+* There's also 92.8% likelihood that bread and toast are purchased in the morning.
+* There's 85.7% likelihood that cake and bread are purchased on weekdays.
+* There's also 85.7% likelihood that tea, cookies and toast are purchased on weekdays.
+* There's also 84.6% likelihood that tea and toast are purchased on weekdays.
+* There's also 86.6% likelihood that medialuna and bread are purchased in the morning.
+
+These are just insights from the first 20 association rules. Remember there are 91 association rules, lot more insights to be uncovered!
+
+The rules can also be sorted by any of the interest measures then inspected. Below is an example of sorting by lift.
+
+```{r}
+# Sort the rules by lift
+Rules <- sort(Rules, by = "lift")
+# Inspect the top 20 rules sorted by lift
+Rules |> head(n = 20) |> inspect()
+```
+
+```{r}
+# Calculate additional interest measures and add them to the rules
+quality(Rules) <- cbind(quality(Rules),
+  interestMeasure(Rules, measure = c("phi", "gini"),
+    trans = trans))
+```
+
+```{r}
+# Save the association rules as a CSV file on Local disk
+write(Rules, file = "Rules2.csv", quote = TRUE)
+```
+
+# Visualize the Asociation Rules
+
+```{r}
+# Scatter plot
+plot(Rules, control = list(jitter = 0), shading = "order")
+```
+
+The rules have 2 or 3 items. All the association rules have high confidence values of at least 0.8, which is good.
+
+```{r}
+# Plot the first 20 rules as a graph, ordered by lift
+plot(Rules |> head(by = "lift", n = 20), method = "graph")
+```
+
+Insights from the plot: (The arrow points day_time/day_type when the indicated items are more likely to be purchased)
+
+* T-shirts -> weekends evening
+* Coffee, bread and toast -> morning
+* Bread and pastry, bread and medialuna -> morning
+* Afternoon with the baker -> weekend afternoon
+
+```{r}
+# Plotting rules as a graph, ordered by confidence
+plot(Rules |> head(by = "confidence", n = 20), method = "graph")
+```
+
+Key insights from the plot: (The arrow points day_time/day_type when the indicated items are more likely to be purchased)
+
+* bread, toast, cookies -> morning
+* soup, coffee, tea, pastry -> weekday
+* chicken stew -> afternoon
+* coffee, sandwich -> afternoon
+* sandwich, coke -> afternoon
+* bread, pastry -> afternoon, weekend
+
+```{r}
+# Create an interactive plot of the first 20 rules as a graph, ordered by lift
+plot(Rules |> head(by = "lift", n = 20), method = "graph", engine = "html")
+```
+
+```{r}
+# Individual rule representation
+plot(Rules, method = "paracoord")
+```
+
+# Interactive inspection of the association rules with Sorting, Filtering and Paging
+
+```{r}
+inspectDT(Rules)
+```
+
+
+This enables for sorting and filtering of the association rules by the interest measures, antecedent and consequent.
+
